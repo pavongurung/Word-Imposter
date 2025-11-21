@@ -8,6 +8,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input";
 import { Users, Play } from "lucide-react";
 import { formatRoomCode } from "@/lib/utils";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 interface HomeProps {
   onCreateRoom: (playerName: string) => void;
@@ -57,6 +58,9 @@ export default function Home({ onCreateRoom, onJoinRoom }: HomeProps) {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary/20 via-background to-secondary/20 flex items-center justify-center p-4" data-testid="home-screen">
+      <div className="absolute top-4 right-4">
+        <ThemeToggle />
+      </div>
       <div className="w-full max-w-2xl space-y-8">
         {/* Header */}
         <div className="text-center space-y-4">
