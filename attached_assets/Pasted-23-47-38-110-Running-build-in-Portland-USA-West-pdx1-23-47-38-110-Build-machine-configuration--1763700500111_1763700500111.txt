@@ -1,0 +1,42 @@
+23:47:38.110 Running build in Portland, USA (West) – pdx1
+23:47:38.110 Build machine configuration: 2 cores, 8 GB
+23:47:38.217 Cloning github.com/pavongurung/Word-Imposter (Branch: main, Commit: 5eb693e)
+23:47:38.218 Previous build caches not available.
+23:47:38.652 Cloning completed: 434.000ms
+23:47:39.018 Running "vercel build"
+23:47:39.417 Vercel CLI 48.10.3
+23:47:40.190 Installing dependencies...
+23:47:44.601 npm warn deprecated @esbuild-kit/esm-loader@2.6.5: Merged into tsx: https://tsx.is
+23:47:44.625 npm warn deprecated @esbuild-kit/core-utils@3.3.2: Merged into tsx: https://tsx.is
+23:47:49.153 
+23:47:49.153 added 478 packages in 9s
+23:47:49.154 
+23:47:49.154 64 packages are looking for funding
+23:47:49.154   run `npm fund` for details
+23:47:49.202 Running "npm run build"
+23:47:49.316 
+23:47:49.316 > rest-express@1.0.0 build
+23:47:49.317 > vite build && esbuild server/index-prod.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/index.js
+23:47:49.317 
+23:47:49.582 [36mvite v5.4.20 [32mbuilding for production...[36m[39m
+23:47:49.633 transforming...
+23:47:50.845 
+23:47:50.846 A PostCSS plugin did not pass the `from` option to `postcss.parse`. This may cause imported assets to be incorrectly transformed. If you've recently added a PostCSS plugin that raised this warning, please contact the package author to fix the issue.
+23:47:54.064 [32m✓[39m 1729 modules transformed.
+23:47:54.385 rendering chunks...
+23:47:54.396 computing gzip size...
+23:47:54.413 [2m../dist/public/[22m[32mindex.html                 [39m[1m[2m  2.27 kB[22m[1m[22m[2m │ gzip:   0.90 kB[22m
+23:47:54.414 [2m../dist/public/[22m[2massets/[22m[35mindex-B4fYY-TJ.css  [39m[1m[2m 74.13 kB[22m[1m[22m[2m │ gzip:  11.88 kB[22m
+23:47:54.414 [2m../dist/public/[22m[2massets/[22m[36mindex-0PXElp34.js   [39m[1m[2m433.91 kB[22m[1m[22m[2m │ gzip: 134.78 kB[22m
+23:47:54.414 [32m✓ built in 4.81s[39m
+23:47:54.449 
+23:47:54.450   dist/index.js  27.8kb
+23:47:54.450 
+23:47:54.451 ⚡ Done in 5ms
+23:47:54.521 Build Completed in /vercel/output [14s]
+23:47:54.685 Deploying outputs...
+23:47:56.685 Deployment completed
+23:47:57.302 Creating build cache...
+23:48:09.858 Created build cache: 12.552s
+23:48:09.858 Uploading build cache [77.52 MB]
+23:48:10.767 Build cache uploaded: 911.796ms
