@@ -110,7 +110,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             };
 
             // Add player to room
-            const updatedRoom = storage.addPlayer(roomCode, player);
+            const updatedRoom = storage.addPlayer(joinCode, player);
             if (!updatedRoom) {
               sendError(ws, "Failed to join room");
               return;
@@ -118,7 +118,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             // Store connection
             playerConnections.set(playerId, ws);
-            playerRooms.set(playerId, roomCode);
+            playerRooms.set(playerId, joinCode);
 
             // Send response to new player
             send(ws, {
@@ -127,7 +127,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             });
 
             // Notify all players in room including the joining player
-            broadcastToRoom(roomCode, {
+            broadcastToRoom(joinCode, {
               type: WSMessageType.PLAYER_JOINED,
               payload: { room: updatedRoom },
             });
