@@ -6,21 +6,24 @@ import express, { type Express } from "express";
 import runApp from "./app";
 
 export async function serveStatic(app: Express, _server: Server) {
-  const distPath = path.resolve(import.meta.dirname, "public");
-  const fallbackPath = path.resolve(process.cwd(), "dist", "public");
-  const resolvedPath = fs.existsSync(distPath) ? distPath : fallbackPath;
-
-  if (!fs.existsSync(resolvedPath)) {
-    throw new Error(
-      `Could not find the build directory: ${resolvedPath} (tried ${distPath} and ${fallbackPath}), make sure to build the client first`,
-    );
+  // In Vercel, the dist folder is at the root of the deployed code
+  const publicPath = path.join(process.cwd(), "public");
+  
+  console.log("[Static] Current working directory:", process.cwd());
+  console.log("[Static] Looking for static files at:", publicPath);
+  
+  if (!fs.existsSync(publicPath)) {
+    console.error("[Static] Static files not found at:", publicPath);
+    console.error("[Static] Available directories:", fs.readdirSync(process.cwd()).slice(0, 10));
+    throw new Error(`Could not find static files at ${publicPath}`);
   }
 
-  app.use(express.static(resolvedPath));
+  // Serve static files from the public directory
+  app.use(express.static(publicPath));
 
-  // fall through to index.html if the file doesn't exist
+  // SPA fallback: serve index.html for all non-API routes
   app.use("*", (_req, res) => {
-    res.sendFile(path.resolve(resolvedPath, "index.html"));
+    res.sendFile(path.join(publicPath, "index.html"));
   });
 }
 

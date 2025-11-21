@@ -1,0 +1,737 @@
+// server/index-prod.ts
+import fs from "node:fs";
+import path from "node:path";
+import express2 from "express";
+
+// server/app.ts
+import express from "express";
+
+// server/routes.ts
+import { createServer } from "http";
+import { WebSocketServer, WebSocket } from "ws";
+
+// shared/schema.ts
+import { z } from "zod";
+var playerSchema = z.object({
+  id: z.string(),
+  name: z.string().min(1).max(20),
+  roomCode: z.string(),
+  isHost: z.boolean(),
+  color: z.string(),
+  isImposter: z.boolean().optional(),
+  hasVoted: z.boolean().optional(),
+  votedFor: z.string().optional()
+});
+var GamePhase = /* @__PURE__ */ ((GamePhase2) => {
+  GamePhase2["LOBBY"] = "LOBBY";
+  GamePhase2["ROLE_REVEAL"] = "ROLE_REVEAL";
+  GamePhase2["GIVING_CLUES"] = "GIVING_CLUES";
+  GamePhase2["VOTING"] = "VOTING";
+  GamePhase2["RESULTS"] = "RESULTS";
+  return GamePhase2;
+})(GamePhase || {});
+var WordDifficulty = /* @__PURE__ */ ((WordDifficulty3) => {
+  WordDifficulty3["EASY"] = "EASY";
+  WordDifficulty3["MEDIUM"] = "MEDIUM";
+  WordDifficulty3["HARD"] = "HARD";
+  return WordDifficulty3;
+})(WordDifficulty || {});
+var WordCategory = /* @__PURE__ */ ((WordCategory3) => {
+  WordCategory3["FOOD"] = "FOOD";
+  WordCategory3["ANIMALS"] = "ANIMALS";
+  WordCategory3["MOVIES_TV"] = "MOVIES_TV";
+  WordCategory3["SPORTS"] = "SPORTS";
+  WordCategory3["PLACES"] = "PLACES";
+  WordCategory3["JOBS"] = "JOBS";
+  WordCategory3["OBJECTS"] = "OBJECTS";
+  WordCategory3["VEHICLES"] = "VEHICLES";
+  WordCategory3["HOLIDAYS"] = "HOLIDAYS";
+  WordCategory3["SCHOOL"] = "SCHOOL";
+  WordCategory3["SILLY"] = "SILLY";
+  WordCategory3["FANTASY"] = "FANTASY";
+  WordCategory3["TECHNOLOGY"] = "TECHNOLOGY";
+  WordCategory3["NATURE"] = "NATURE";
+  WordCategory3["MUSIC"] = "MUSIC";
+  return WordCategory3;
+})(WordCategory || {});
+var clueSchema = z.object({
+  playerId: z.string(),
+  playerName: z.string(),
+  clue: z.string().min(1).max(50),
+  timestamp: z.number()
+});
+var roomSettingsSchema = z.object({
+  category: z.nativeEnum(WordCategory),
+  difficulty: z.nativeEnum(WordDifficulty),
+  clueRounds: z.number().min(2).max(5),
+  allowPhrases: z.boolean()
+});
+var gameRoomSchema = z.object({
+  code: z.string(),
+  players: z.array(playerSchema),
+  phase: z.nativeEnum(GamePhase),
+  settings: roomSettingsSchema,
+  secretWord: z.string().optional(),
+  imposterId: z.string().optional(),
+  currentTurn: z.number().optional(),
+  currentRound: z.number().optional(),
+  clues: z.array(clueSchema).optional(),
+  votes: z.record(z.string()).optional(),
+  // playerId -> votedForPlayerId
+  createdAt: z.number()
+});
+var WSMessageType = /* @__PURE__ */ ((WSMessageType2) => {
+  WSMessageType2["CREATE_ROOM"] = "CREATE_ROOM";
+  WSMessageType2["JOIN_ROOM"] = "JOIN_ROOM";
+  WSMessageType2["LEAVE_ROOM"] = "LEAVE_ROOM";
+  WSMessageType2["UPDATE_SETTINGS"] = "UPDATE_SETTINGS";
+  WSMessageType2["START_GAME"] = "START_GAME";
+  WSMessageType2["SUBMIT_CLUE"] = "SUBMIT_CLUE";
+  WSMessageType2["SUBMIT_VOTE"] = "SUBMIT_VOTE";
+  WSMessageType2["NEXT_ROUND"] = "NEXT_ROUND";
+  WSMessageType2["ROOM_CREATED"] = "ROOM_CREATED";
+  WSMessageType2["ROOM_JOINED"] = "ROOM_JOINED";
+  WSMessageType2["ROOM_STATE"] = "ROOM_STATE";
+  WSMessageType2["PLAYER_JOINED"] = "PLAYER_JOINED";
+  WSMessageType2["PLAYER_LEFT"] = "PLAYER_LEFT";
+  WSMessageType2["SETTINGS_UPDATED"] = "SETTINGS_UPDATED";
+  WSMessageType2["GAME_STARTED"] = "GAME_STARTED";
+  WSMessageType2["ROLE_ASSIGNED"] = "ROLE_ASSIGNED";
+  WSMessageType2["TURN_CHANGED"] = "TURN_CHANGED";
+  WSMessageType2["CLUE_SUBMITTED"] = "CLUE_SUBMITTED";
+  WSMessageType2["VOTING_STARTED"] = "VOTING_STARTED";
+  WSMessageType2["VOTE_SUBMITTED"] = "VOTE_SUBMITTED";
+  WSMessageType2["GAME_ENDED"] = "GAME_ENDED";
+  WSMessageType2["ERROR"] = "ERROR";
+  return WSMessageType2;
+})(WSMessageType || {});
+var wsMessageSchema = z.object({
+  type: z.nativeEnum(WSMessageType),
+  payload: z.any()
+});
+
+// server/words.ts
+var WORDS = {
+  ["FOOD" /* FOOD */]: {
+    ["EASY" /* EASY */]: ["Pizza", "Apple", "Bread", "Cake", "Ice Cream", "Banana", "Sandwich", "Milk", "Cookie", "Cheese"],
+    ["MEDIUM" /* MEDIUM */]: ["Spaghetti", "Hamburger", "Popcorn", "Salad", "Muffin", "Taco", "Yogurt", "Cereal", "Peanut Butter", "Chicken"],
+    ["HARD" /* HARD */]: ["Croissant", "Quiche", "Sushi", "Ravioli", "Guacamole", "Eggplant", "Avocado", "Falafel", "Pomegranate", "Wasabi"]
+  },
+  ["ANIMALS" /* ANIMALS */]: {
+    ["EASY" /* EASY */]: ["Dog", "Cat", "Cow", "Fish", "Horse", "Duck", "Bird", "Pig", "Rabbit", "Lion"],
+    ["MEDIUM" /* MEDIUM */]: ["Elephant", "Giraffe", "Kangaroo", "Panda", "Penguin", "Zebra", "Bear", "Monkey", "Snake", "Dolphin"],
+    ["HARD" /* HARD */]: ["Armadillo", "Platypus", "Narwhal", "Chameleon", "Wombat", "Axolotl", "Sloth", "Tarantula", "Iguana", "Hedgehog"]
+  },
+  ["MOVIES_TV" /* MOVIES_TV */]: {
+    ["EASY" /* EASY */]: ["Frozen", "Toy Story", "Spider-Man", "Minions", "Batman", "Cars", "Moana", "Shrek", "Harry Potter", "Star Wars"],
+    ["MEDIUM" /* MEDIUM */]: ["Jurassic Park", "Finding Nemo", "Black Panther", "Aladdin", "Lion King", "Home Alone", "E.T.", "Cinderella", "Encanto", "Up"],
+    ["HARD" /* HARD */]: ["Inception", "Casablanca", "The Godfather", "Parasite", "Interstellar", "Am\xE9lie", "Jaws", "Titanic", "La La Land", "Gladiator"]
+  },
+  ["SPORTS" /* SPORTS */]: {
+    ["EASY" /* EASY */]: ["Soccer", "Basketball", "Baseball", "Football", "Tennis", "Hockey", "Golf", "Swimming", "Running", "Volleyball"],
+    ["MEDIUM" /* MEDIUM */]: ["Badminton", "Bowling", "Rugby", "Skateboarding", "Surfing", "Lacrosse", "Karate", "Gymnastics", "Archery", "Dodgeball"],
+    ["HARD" /* HARD */]: ["Polo", "Curling", "Fencing", "Equestrian", "Biathlon", "Triathlon", "Javelin", "Bocce", "Squash", "Cricket"]
+  },
+  ["PLACES" /* PLACES */]: {
+    ["EASY" /* EASY */]: ["School", "Park", "Beach", "Home", "Zoo", "Farm", "Playground", "Mall", "Hospital", "Library"],
+    ["MEDIUM" /* MEDIUM */]: ["City Hall", "Stadium", "Airport", "Theater", "Aquarium", "Museum", "Restaurant", "Castle", "Mountain", "Bridge"],
+    ["HARD" /* HARD */]: ["Pyramids", "Eiffel Tower", "Great Wall", "Taj Mahal", "Colosseum", "Machu Picchu", "Stonehenge", "Sydney Opera House", "Statue of Liberty", "Mount Everest"]
+  },
+  ["JOBS" /* JOBS */]: {
+    ["EASY" /* EASY */]: ["Teacher", "Doctor", "Chef", "Farmer", "Nurse", "Firefighter", "Police Officer", "Singer", "Athlete", "Pilot"],
+    ["MEDIUM" /* MEDIUM */]: ["Librarian", "Engineer", "Lawyer", "Dancer", "Mechanic", "Scientist", "Actor", "Author", "Soldier", "Baker"],
+    ["HARD" /* HARD */]: ["Archaeologist", "Astronomer", "Mathematician", "Fashion Designer", "Diplomat", "Geologist", "Biologist", "Sculptor", "Politician", "Architect"]
+  },
+  ["OBJECTS" /* OBJECTS */]: {
+    ["EASY" /* EASY */]: ["Ball", "Chair", "Book", "Phone", "Bed", "Table", "Shoes", "Hat", "Pen", "Clock"],
+    ["MEDIUM" /* MEDIUM */]: ["Backpack", "Camera", "Guitar", "Bicycle", "Umbrella", "Mirror", "Radio", "Blanket", "Suitcase", "Microwave"],
+    ["HARD" /* HARD */]: ["Telescope", "Typewriter", "Microscope", "Projector", "Compass", "Thermometer", "Accordion", "Saxophone", "Sewing Machine", "Drone"]
+  },
+  ["VEHICLES" /* VEHICLES */]: {
+    ["EASY" /* EASY */]: ["Car", "Bus", "Bike", "Boat", "Truck", "Train", "Plane", "Taxi", "Van", "Scooter"],
+    ["MEDIUM" /* MEDIUM */]: ["Helicopter", "Motorcycle", "Sailboat", "Tractor", "Submarine", "Jeep", "Limousine", "Hot Air Balloon", "Skateboard", "Rocket"],
+    ["HARD" /* HARD */]: ["Segway", "Monorail", "Rickshaw", "Gondola", "Hovercraft", "Cable Car", "Zeppelin", "Tuk Tuk", "Snowmobile", "Amphibious Vehicle"]
+  },
+  ["HOLIDAYS" /* HOLIDAYS */]: {
+    ["EASY" /* EASY */]: ["Birthday", "Christmas", "Halloween", "Easter", "New Year", "Thanksgiving", "Wedding", "Graduation", "Valentine's Day", "Party"],
+    ["MEDIUM" /* MEDIUM */]: ["Fireworks", "Parade", "Pumpkin", "Santa Claus", "Hanukkah", "Costume", "Cake", "Gift", "Balloon", "Turkey"],
+    ["HARD" /* HARD */]: ["Pi\xF1ata", "Diwali", "Ramadan", "Kwanzaa", "Lantern Festival", "Oktoberfest", "Mardi Gras", "Passover", "Holi", "Cinco de Mayo"]
+  },
+  ["SCHOOL" /* SCHOOL */]: {
+    ["EASY" /* EASY */]: ["Teacher", "Desk", "Book", "Pencil", "Eraser", "Notebook", "Ruler", "Backpack", "Lunch", "Bus"],
+    ["MEDIUM" /* MEDIUM */]: ["Calculator", "Globe", "Blackboard", "Test", "Science", "History", "Dictionary", "Marker", "Recess", "Homework"],
+    ["HARD" /* HARD */]: ["Microscope", "Thesis", "Graduation", "Laboratory", "Debate", "Scholarship", "Periodic Table", "Geometry", "Physics", "Biology"]
+  },
+  ["SILLY" /* SILLY */]: {
+    ["EASY" /* EASY */]: ["Banana Peel", "Unicorn", "Slime", "Chicken Nugget", "Bubble", "Robot", "Pickle", "Mustache", "Toilet", "Clown"],
+    ["MEDIUM" /* MEDIUM */]: ["Rubber Chicken", "Disco Ball", "Llama", "Kazoo", "Waffle", "Flamingo", "Donut", "Pirate", "Dinosaur Costume", "Taco Truck"],
+    ["HARD" /* HARD */]: ["Whoopee Cushion", "Platypus", "Loch Ness Monster", "Yeti", "Marshmallow Cannon", "Giant Rubber Duck", "Sasquatch", "Narwhal", "UFO", "Time Machine"]
+  },
+  ["FANTASY" /* FANTASY */]: {
+    ["EASY" /* EASY */]: ["Dragon", "Fairy", "Wizard", "Giant", "Mermaid", "Troll", "Elf", "Unicorn", "Witch", "Knight"],
+    ["MEDIUM" /* MEDIUM */]: ["Griffin", "Phoenix", "Centaur", "Minotaur", "Pegasus", "Cyclops", "Goblin", "Genie", "Werewolf", "Vampire"],
+    ["HARD" /* HARD */]: ["Chimera", "Kraken", "Basilisk", "Hydra", "Leviathan", "Banshee", "Sphinx", "Thunderbird", "Golem", "Djinn"]
+  },
+  ["TECHNOLOGY" /* TECHNOLOGY */]: {
+    ["EASY" /* EASY */]: ["Phone", "Laptop", "TV", "Headphones", "Camera", "Tablet", "Mouse", "Keyboard", "Watch", "Remote"],
+    ["MEDIUM" /* MEDIUM */]: ["Drone", "Printer", "Microphone", "Projector", "Smartwatch", "Video Game", "Calculator", "Telescope", "Robot", "Flashlight"],
+    ["HARD" /* HARD */]: ["3D Printer", "Virtual Reality", "Quantum Computer", "Satellite", "Supercomputer", "Nanobot", "Hoverboard", "AI Assistant", "Cryptominer", "Hologram"]
+  },
+  ["NATURE" /* NATURE */]: {
+    ["EASY" /* EASY */]: ["Tree", "Rock", "River", "Sun", "Moon", "Flower", "Grass", "Mountain", "Cloud", "Leaf"],
+    ["MEDIUM" /* MEDIUM */]: ["Volcano", "Glacier", "Canyon", "Desert", "Jungle", "Waterfall", "Ocean", "Storm", "Rainbow", "Cave"],
+    ["HARD" /* HARD */]: ["Aurora Borealis", "Tsunami", "Earthquake", "Meteor", "Eclipse", "Black Hole", "Sandstorm", "Tornado", "Coral Reef", "Fossil"]
+  },
+  ["MUSIC" /* MUSIC */]: {
+    ["EASY" /* EASY */]: ["Guitar", "Piano", "Song", "Dance", "Singer", "Drum", "Radio", "Movie", "Game", "Stage"],
+    ["MEDIUM" /* MEDIUM */]: ["Violin", "Trumpet", "DJ", "Orchestra", "Actor", "Musical", "Karaoke", "Popcorn", "Audience", "Costume"],
+    ["HARD" /* HARD */]: ["Didgeridoo", "Harpsichord", "Theremin", "Sitar", "Bagpipes", "Sousaphone", "Ballet", "Opera", "Mime", "Shakespeare"]
+  }
+};
+function getRandomWord(category, difficulty) {
+  const words = WORDS[category][difficulty];
+  return words[Math.floor(Math.random() * words.length)];
+}
+
+// server/storage.ts
+var MemStorage = class {
+  rooms;
+  constructor() {
+    this.rooms = /* @__PURE__ */ new Map();
+  }
+  createRoom(settings) {
+    let code;
+    do {
+      code = this.generateUniqueRoomCode();
+    } while (this.rooms.has(code));
+    const room = {
+      code,
+      players: [],
+      phase: "LOBBY" /* LOBBY */,
+      settings,
+      createdAt: Date.now()
+    };
+    this.rooms.set(code, room);
+    return room;
+  }
+  generateUniqueRoomCode() {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let code = "";
+    for (let i = 0; i < 6; i++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return code;
+  }
+  getRoom(code) {
+    return this.rooms.get(code);
+  }
+  updateRoom(code, updates) {
+    const room = this.rooms.get(code);
+    if (!room) return void 0;
+    const updated = { ...room, ...updates };
+    this.rooms.set(code, updated);
+    return updated;
+  }
+  deleteRoom(code) {
+    this.rooms.delete(code);
+  }
+  addPlayer(roomCode, player) {
+    const room = this.rooms.get(roomCode);
+    if (!room) return void 0;
+    const newPlayer = {
+      ...player,
+      roomCode,
+      isHost: room.players.length === 0
+    };
+    room.players.push(newPlayer);
+    this.rooms.set(roomCode, room);
+    return room;
+  }
+  removePlayer(roomCode, playerId) {
+    const room = this.rooms.get(roomCode);
+    if (!room) return void 0;
+    const playerIndex = room.players.findIndex((p) => p.id === playerId);
+    if (playerIndex === -1) return void 0;
+    const wasHost = room.players[playerIndex].isHost;
+    room.players.splice(playerIndex, 1);
+    if (wasHost && room.players.length > 0) {
+      room.players[0].isHost = true;
+    }
+    if (room.players.length === 0) {
+      this.deleteRoom(roomCode);
+      return void 0;
+    }
+    this.rooms.set(roomCode, room);
+    return room;
+  }
+  updatePlayer(roomCode, playerId, updates) {
+    const room = this.rooms.get(roomCode);
+    if (!room) return void 0;
+    const playerIndex = room.players.findIndex((p) => p.id === playerId);
+    if (playerIndex === -1) return void 0;
+    room.players[playerIndex] = { ...room.players[playerIndex], ...updates };
+    this.rooms.set(roomCode, room);
+    return room;
+  }
+  startGame(roomCode) {
+    const room = this.rooms.get(roomCode);
+    if (!room || room.players.length < 4 || room.players.length > 10) {
+      return void 0;
+    }
+    const imposterIndex = Math.floor(Math.random() * room.players.length);
+    const imposter = room.players[imposterIndex];
+    const secretWord = getRandomWord(room.settings.category, room.settings.difficulty);
+    room.phase = "ROLE_REVEAL" /* ROLE_REVEAL */;
+    room.secretWord = secretWord;
+    room.imposterId = imposter.id;
+    room.currentTurn = 0;
+    room.currentRound = 1;
+    room.clues = [];
+    room.players.forEach((player) => {
+      player.isImposter = player.id === imposter.id;
+      player.hasVoted = false;
+      player.votedFor = void 0;
+    });
+    this.rooms.set(roomCode, room);
+    return { room, imposter, secretWord };
+  }
+  submitClue(roomCode, playerId, clueText) {
+    const room = this.rooms.get(roomCode);
+    if (!room || room.phase !== "GIVING_CLUES" /* GIVING_CLUES */) {
+      return void 0;
+    }
+    const currentPlayer = room.players[room.currentTurn % room.players.length];
+    if (currentPlayer.id !== playerId) {
+      return void 0;
+    }
+    const player = room.players.find((p) => p.id === playerId);
+    if (!player) return void 0;
+    const clue = {
+      playerId,
+      playerName: player.name,
+      clue: clueText,
+      timestamp: Date.now()
+    };
+    room.clues = room.clues || [];
+    room.clues.push(clue);
+    room.currentTurn++;
+    if (room.currentTurn >= room.players.length * room.currentRound) {
+      if (room.currentRound >= room.settings.clueRounds) {
+        room.phase = "VOTING" /* VOTING */;
+      } else {
+        room.currentRound++;
+      }
+    }
+    this.rooms.set(roomCode, room);
+    return room;
+  }
+  submitVote(roomCode, playerId, votedForId) {
+    const room = this.rooms.get(roomCode);
+    if (!room || room.phase !== "VOTING" /* VOTING */) {
+      return void 0;
+    }
+    const playerIndex = room.players.findIndex((p) => p.id === playerId);
+    if (playerIndex === -1) return void 0;
+    room.players[playerIndex].hasVoted = true;
+    room.players[playerIndex].votedFor = votedForId;
+    const allVoted = room.players.every((p) => p.hasVoted);
+    if (allVoted) {
+      room.phase = "RESULTS" /* RESULTS */;
+    }
+    this.rooms.set(roomCode, room);
+    return room;
+  }
+  nextRound(roomCode) {
+    const room = this.rooms.get(roomCode);
+    if (!room || room.phase !== "RESULTS" /* RESULTS */) {
+      return void 0;
+    }
+    room.phase = "LOBBY" /* LOBBY */;
+    room.secretWord = void 0;
+    room.imposterId = void 0;
+    room.currentTurn = void 0;
+    room.currentRound = void 0;
+    room.clues = [];
+    room.players.forEach((player) => {
+      player.isImposter = void 0;
+      player.hasVoted = false;
+      player.votedFor = void 0;
+    });
+    this.rooms.set(roomCode, room);
+    return room;
+  }
+};
+var storage = new MemStorage();
+
+// server/routes.ts
+import { randomUUID } from "crypto";
+var playerConnections = /* @__PURE__ */ new Map();
+var playerRooms = /* @__PURE__ */ new Map();
+async function registerRoutes(app2) {
+  const httpServer = createServer(app2);
+  const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
+  wss.on("connection", (ws) => {
+    console.log("New WebSocket connection");
+    let playerId;
+    let roomCode;
+    ws.on("message", async (data) => {
+      try {
+        const message = JSON.parse(data.toString());
+        console.log("Received message:", message.type);
+        switch (message.type) {
+          case "CREATE_ROOM" /* CREATE_ROOM */: {
+            const { playerName, color } = message.payload;
+            const settings = {
+              category: "FOOD" /* FOOD */,
+              difficulty: "MEDIUM" /* MEDIUM */,
+              clueRounds: 3,
+              allowPhrases: false
+            };
+            const room = storage.createRoom(settings);
+            roomCode = room.code;
+            playerId = randomUUID();
+            const player = {
+              id: playerId,
+              name: playerName,
+              isHost: true,
+              color
+            };
+            const updatedRoom = storage.addPlayer(roomCode, player);
+            if (!updatedRoom) {
+              sendError(ws, "Failed to create room");
+              return;
+            }
+            playerConnections.set(playerId, ws);
+            playerRooms.set(playerId, roomCode);
+            send(ws, {
+              type: "ROOM_CREATED" /* ROOM_CREATED */,
+              payload: { playerId, room: updatedRoom }
+            });
+            break;
+          }
+          case "JOIN_ROOM" /* JOIN_ROOM */: {
+            const { playerName, roomCode: joinCode, color } = message.payload;
+            const room = storage.getRoom(joinCode);
+            if (!room) {
+              sendError(ws, "Room not found");
+              return;
+            }
+            if (room.phase !== "LOBBY" /* LOBBY */) {
+              sendError(ws, "Game already in progress");
+              return;
+            }
+            if (room.players.length >= 10) {
+              sendError(ws, "Room is full");
+              return;
+            }
+            playerId = randomUUID();
+            roomCode = joinCode;
+            const player = {
+              id: playerId,
+              name: playerName,
+              isHost: false,
+              color
+            };
+            const updatedRoom = storage.addPlayer(joinCode, player);
+            if (!updatedRoom) {
+              sendError(ws, "Failed to join room");
+              return;
+            }
+            playerConnections.set(playerId, ws);
+            playerRooms.set(playerId, joinCode);
+            send(ws, {
+              type: "ROOM_JOINED" /* ROOM_JOINED */,
+              payload: { playerId, room: updatedRoom }
+            });
+            broadcastToRoom(joinCode, {
+              type: "PLAYER_JOINED" /* PLAYER_JOINED */,
+              payload: { room: updatedRoom }
+            });
+            break;
+          }
+          case "LEAVE_ROOM" /* LEAVE_ROOM */: {
+            if (!playerId || !roomCode) return;
+            const room = storage.removePlayer(roomCode, playerId);
+            playerConnections.delete(playerId);
+            playerRooms.delete(playerId);
+            if (room) {
+              broadcastToRoom(roomCode, {
+                type: "PLAYER_LEFT" /* PLAYER_LEFT */,
+                payload: { room }
+              });
+            }
+            break;
+          }
+          case "UPDATE_SETTINGS" /* UPDATE_SETTINGS */: {
+            if (!playerId || !roomCode) return;
+            const room = storage.getRoom(roomCode);
+            if (!room) {
+              sendError(ws, "Room not found");
+              return;
+            }
+            const player = room.players.find((p) => p.id === playerId);
+            if (!player?.isHost) {
+              sendError(ws, "Only host can update settings");
+              return;
+            }
+            const updatedRoom = storage.updateRoom(roomCode, {
+              settings: { ...room.settings, ...message.payload.settings }
+            });
+            if (!updatedRoom) {
+              sendError(ws, "Failed to update settings");
+              return;
+            }
+            broadcastToRoom(roomCode, {
+              type: "SETTINGS_UPDATED" /* SETTINGS_UPDATED */,
+              payload: { room: updatedRoom }
+            });
+            break;
+          }
+          case "START_GAME" /* START_GAME */: {
+            if (!playerId || !roomCode) return;
+            const room = storage.getRoom(roomCode);
+            if (!room) {
+              sendError(ws, "Room not found");
+              return;
+            }
+            const player = room.players.find((p) => p.id === playerId);
+            if (!player?.isHost) {
+              sendError(ws, "Only host can start game");
+              return;
+            }
+            const result = storage.startGame(roomCode);
+            if (!result) {
+              sendError(ws, "Failed to start game");
+              return;
+            }
+            const { room: updatedRoom, imposter, secretWord } = result;
+            updatedRoom.players.forEach((p) => {
+              const playerWs = playerConnections.get(p.id);
+              if (playerWs && playerWs.readyState === WebSocket.OPEN) {
+                send(playerWs, {
+                  type: "ROLE_ASSIGNED" /* ROLE_ASSIGNED */,
+                  payload: {
+                    isImposter: p.id === imposter.id,
+                    secretWord: p.id === imposter.id ? void 0 : secretWord
+                  }
+                });
+              }
+            });
+            broadcastToRoom(roomCode, {
+              type: "GAME_STARTED" /* GAME_STARTED */,
+              payload: { room: updatedRoom }
+            });
+            setTimeout(() => {
+              if (roomCode) {
+                const room2 = storage.updateRoom(roomCode, {
+                  phase: "GIVING_CLUES" /* GIVING_CLUES */
+                });
+                if (room2) {
+                  broadcastToRoom(roomCode, {
+                    type: "TURN_CHANGED" /* TURN_CHANGED */,
+                    payload: { room: room2 }
+                  });
+                }
+              }
+            }, 6e3);
+            break;
+          }
+          case "SUBMIT_CLUE" /* SUBMIT_CLUE */: {
+            if (!playerId || !roomCode) return;
+            const { clue } = message.payload;
+            const updatedRoom = storage.submitClue(roomCode, playerId, clue);
+            if (!updatedRoom) {
+              sendError(ws, "Failed to submit clue");
+              return;
+            }
+            if (updatedRoom.phase === "VOTING" /* VOTING */) {
+              broadcastToRoom(roomCode, {
+                type: "VOTING_STARTED" /* VOTING_STARTED */,
+                payload: { room: updatedRoom }
+              });
+            } else {
+              broadcastToRoom(roomCode, {
+                type: "CLUE_SUBMITTED" /* CLUE_SUBMITTED */,
+                payload: { room: updatedRoom }
+              });
+            }
+            break;
+          }
+          case "SUBMIT_VOTE" /* SUBMIT_VOTE */: {
+            if (!playerId || !roomCode) return;
+            const { votedPlayerId } = message.payload;
+            const updatedRoom = storage.submitVote(roomCode, playerId, votedPlayerId);
+            if (!updatedRoom) {
+              sendError(ws, "Failed to submit vote");
+              return;
+            }
+            if (updatedRoom.phase === "RESULTS" /* RESULTS */) {
+              broadcastToRoom(roomCode, {
+                type: "GAME_ENDED" /* GAME_ENDED */,
+                payload: { room: updatedRoom }
+              });
+            } else {
+              broadcastToRoom(roomCode, {
+                type: "VOTE_SUBMITTED" /* VOTE_SUBMITTED */,
+                payload: { room: updatedRoom }
+              });
+            }
+            break;
+          }
+          case "NEXT_ROUND" /* NEXT_ROUND */: {
+            if (!playerId || !roomCode) return;
+            const room = storage.getRoom(roomCode);
+            if (!room) {
+              sendError(ws, "Room not found");
+              return;
+            }
+            const player = room.players.find((p) => p.id === playerId);
+            if (!player?.isHost) {
+              sendError(ws, "Only host can start next round");
+              return;
+            }
+            const updatedRoom = storage.nextRound(roomCode);
+            if (!updatedRoom) {
+              sendError(ws, "Failed to start next round");
+              return;
+            }
+            broadcastToRoom(roomCode, {
+              type: "ROOM_STATE" /* ROOM_STATE */,
+              payload: { room: updatedRoom }
+            });
+            break;
+          }
+          default:
+            console.warn("Unknown message type:", message.type);
+        }
+      } catch (error) {
+        console.error("Error handling message:", error);
+        sendError(ws, "Internal server error");
+      }
+    });
+    ws.on("close", () => {
+      console.log("WebSocket connection closed");
+      if (playerId && roomCode) {
+        const room = storage.removePlayer(roomCode, playerId);
+        playerConnections.delete(playerId);
+        playerRooms.delete(playerId);
+        if (room) {
+          broadcastToRoom(roomCode, {
+            type: "PLAYER_LEFT" /* PLAYER_LEFT */,
+            payload: { room }
+          });
+        }
+      }
+    });
+    ws.on("error", (error) => {
+      console.error("WebSocket error:", error);
+    });
+  });
+  function send(ws, message) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(message));
+    }
+  }
+  function sendError(ws, errorMessage) {
+    send(ws, {
+      type: "ERROR" /* ERROR */,
+      payload: { message: errorMessage }
+    });
+  }
+  function broadcastToRoom(roomCode, message) {
+    const room = storage.getRoom(roomCode);
+    if (!room) return;
+    room.players.forEach((player) => {
+      const playerWs = playerConnections.get(player.id);
+      if (playerWs && playerWs.readyState === WebSocket.OPEN) {
+        send(playerWs, message);
+      }
+    });
+  }
+  return httpServer;
+}
+
+// server/app.ts
+function log(message, source = "express") {
+  const formattedTime = (/* @__PURE__ */ new Date()).toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true
+  });
+  console.log(`${formattedTime} [${source}] ${message}`);
+}
+var app = express();
+app.use(express.json({
+  verify: (req, _res, buf) => {
+    req.rawBody = buf;
+  }
+}));
+app.use(express.urlencoded({ extended: false }));
+app.use((req, res, next) => {
+  const start = Date.now();
+  const path2 = req.path;
+  let capturedJsonResponse = void 0;
+  const originalResJson = res.json;
+  res.json = function(bodyJson, ...args) {
+    capturedJsonResponse = bodyJson;
+    return originalResJson.apply(res, [bodyJson, ...args]);
+  };
+  res.on("finish", () => {
+    const duration = Date.now() - start;
+    if (path2.startsWith("/api")) {
+      let logLine = `${req.method} ${path2} ${res.statusCode} in ${duration}ms`;
+      if (capturedJsonResponse) {
+        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+      }
+      if (logLine.length > 80) {
+        logLine = logLine.slice(0, 79) + "\u2026";
+      }
+      log(logLine);
+    }
+  });
+  next();
+});
+async function runApp(setup) {
+  const server = await registerRoutes(app);
+  app.use((err, _req, res, _next) => {
+    const status = err.status || err.statusCode || 500;
+    const message = err.message || "Internal Server Error";
+    res.status(status).json({ message });
+    throw err;
+  });
+  await setup(app, server);
+  if (!process.env.VERCEL) {
+    const port = parseInt(process.env.PORT || "5000", 10);
+    server.listen({
+      port,
+      host: "0.0.0.0"
+    }, () => {
+      log(`serving on port ${port}`);
+    });
+  }
+  return server;
+}
+
+// server/index-prod.ts
+async function serveStatic(app2, _server) {
+  const distPath = path.resolve(import.meta.dirname, "public");
+  const fallbackPath = path.resolve(process.cwd(), "dist", "public");
+  const resolvedPath = fs.existsSync(distPath) ? distPath : fallbackPath;
+  if (!fs.existsSync(resolvedPath)) {
+    throw new Error(
+      `Could not find the build directory: ${resolvedPath} (tried ${distPath} and ${fallbackPath}), make sure to build the client first`
+    );
+  }
+  app2.use(express2.static(resolvedPath));
+  app2.use("*", (_req, res) => {
+    res.sendFile(path.resolve(resolvedPath, "index.html"));
+  });
+}
+(async () => {
+  await runApp(serveStatic);
+})();
+export {
+  serveStatic
+};
+
