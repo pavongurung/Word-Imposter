@@ -237,14 +237,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             // After role reveal, start giving clues
             setTimeout(() => {
-              const room = storage.updateRoom(roomCode, {
-                phase: GamePhase.GIVING_CLUES,
-              });
-              if (room) {
-                broadcastToRoom(roomCode, {
-                  type: WSMessageType.TURN_CHANGED,
-                  payload: { room },
+              if (roomCode) {
+                const room = storage.updateRoom(roomCode, {
+                  phase: GamePhase.GIVING_CLUES,
                 });
+                if (room) {
+                  broadcastToRoom(roomCode, {
+                    type: WSMessageType.TURN_CHANGED,
+                    payload: { room },
+                  });
+                }
               }
             }, 6000); // 6 second delay for role reveal
 
