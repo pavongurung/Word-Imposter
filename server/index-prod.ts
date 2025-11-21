@@ -6,24 +6,27 @@ import express, { type Express } from "express";
 import runApp from "./app";
 
 export async function serveStatic(app: Express, _server: Server) {
-  // In Vercel, the dist folder is at the root of the deployed code
-  const publicPath = path.join(process.cwd(), "public");
+  // Vite builds to dist/public, so serve from there
+  const publicPath = path.join(process.cwd(), "dist", "public");
   
-  console.log("[Static] Current working directory:", process.cwd());
-  console.log("[Static] Looking for static files at:", publicPath);
+  console.log("[Static] Serving static files from:", publicPath);
   
   if (!fs.existsSync(publicPath)) {
-    console.error("[Static] Static files not found at:", publicPath);
-    console.error("[Static] Available directories:", fs.readdirSync(process.cwd()).slice(0, 10));
+    console.error("[Static] Static files NOT found at:", publicPath);
+    console.error("[Static] Current directory contents:", fs.readdirSync(process.cwd()).slice(0, 20));
     throw new Error(`Could not find static files at ${publicPath}`);
   }
 
-  // Serve static files from the public directory
+  // Serve static files
   app.use(express.static(publicPath));
 
   // SPA fallback: serve index.html for all non-API routes
   app.use("*", (_req, res) => {
-    res.sendFile(path.join(publicPath, "index.html"));
+    const indexPath = path.join(publicPath, "index.html");
+    if (!fs.existsSync(indexPath)) {
+      return res.status(500).send("index.html not found");
+    }
+    res.sendFile(indexPath);
   });
 }
 
